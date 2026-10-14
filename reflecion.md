@@ -1,0 +1,7 @@
+# Day 8 Reflection
+
+**The most difficult concept.** For me it was thinking in terms of scale and bottlenecks. When I only build something that works on my own laptop, every request is fast. Estimating requests per second, and then asking "where does this break first?", was a new habit. I overcame it by doing the arithmetic by hand each time, for example turning 100 million requests a day into about 1,000 per second, and then naming one specific problem before adding any component. Once I forced myself to say "this cache exists because reads overwhelm the database", the diagrams stopped feeling like a list of boxes to memorise.
+
+**What I would improve in my capstone.** QuickNotes currently relies on a front end that stores notes in the browser. The design documents describe a proper API and data model, but the project does not use them yet. I would build the real backend so that the endpoints, status codes and tables from my docs are actually running, and so the data is shared between devices instead of staying in one browser. I would also add clearer error handling for the cases a user is most likely to hit, such as saving an empty note.
+
+**What I will learn next.** First, a Node.js and Express backend, so that I can turn my API design into working code. Second, a real database, PostgreSQL, so that I can practise transactions and constraints like the ones I used to prevent double-booking in TicketHub. After that I will keep working through the System Design Primer, because the fluency comes from repeating the framework on new problems.

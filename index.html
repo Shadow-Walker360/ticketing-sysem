@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TicketHub</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1b1f24; --muted: #5d6673; --line: #d9dde3;
+    --brand: #4f46e5; --brand-text: #ffffff; --ok: #15803d; --bad: #b91c1c;
+    --seat-free: #e8f5e9; --seat-free-line: #2e7d32; --seat-held: #fff3cd; --seat-sold: #e5e7eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151a; --card: #1b2027; --text: #e8eaed; --muted: #9aa3af; --line: #343b45;
+      --brand: #818cf8; --brand-text: #0f1115; --ok: #4ade80; --bad: #f87171;
+      --seat-free: #17301d; --seat-free-line: #4ade80; --seat-held: #3a3210; --seat-sold: #2a2f37;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; flex-wrap: wrap; gap: .75rem 1.5rem; align-items: center; justify-content: space-between; padding: .75rem 1rem; background: var(--card); border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 1.25rem; }
+  nav { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  main { max-width: 900px; margin: 0 auto; padding: 1rem; }
+  a { color: var(--brand); }
+  button, input { font: inherit; }
+  button { cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--text); padding: .45rem .9rem; border-radius: 8px; }
+  button.primary { background: var(--brand); color: var(--brand-text); border-color: var(--brand); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  input { padding: .5rem .7rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); width: 100%; }
+  label { display: block; font-size: .9rem; margin: .75rem 0 .25rem; color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
+  .card h2, .card h3 { margin: 0 0 .25rem; }
+  .muted { color: var(--muted); font-size: .9rem; }
+  .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  .row.between { justify-content: space-between; }
+  .search { display: flex; gap: .5rem; margin-bottom: 1rem; }
+  .section-title { margin: 1rem 0 .25rem; font-weight: 600; }
+  .seat-row { display: flex; align-items: center; gap: .35rem; margin: .25rem 0; flex-wrap: wrap; }
+  .row-label { width: 1.5rem; color: var(--muted); font-size: .85rem; }
+  .seat { width: 2.4rem; height: 2.4rem; padding: 0; border-radius: 6px; font-size: .8rem; background: var(--seat-free); border: 1px solid var(--seat-free-line); }
+  .seat.held { background: var(--seat-held); border-style: dashed; }
+  .seat.sold { background: var(--seat-sold); text-decoration: line-through; }
+  .seat.selected { background: var(--brand); color: var(--brand-text); border-color: var(--brand); font-weight: 700; }
+  .legend { display: flex; flex-wrap: wrap; gap: 1rem; font-size: .85rem; color: var(--muted); margin: .5rem 0; }
+  .legend .seat { width: 1.2rem; height: 1.2rem; display: inline-block; vertical-align: middle; cursor: default; }
+  .msg { padding: .6rem .9rem; border-radius: 8px; margin: .75rem 0; border: 1px solid var(--line); }
+  .msg.error { border-color: var(--bad); color: var(--bad); }
+  .msg.ok { border-color: var(--ok); color: var(--ok); }
+  .tabs { display: flex; gap: .5rem; margin-bottom: .5rem; }
+  .tabs button[aria-pressed="true"] { background: var(--brand); color: var(--brand-text); border-color: var(--brand); }
+  .ticket { border-left: 4px solid var(--brand); }
+  .timer { font-variant-numeric: tabular-nums; font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="#/" style="text-decoration:none;color:inherit">TicketHub</a></h1>
+  <nav id="nav"></nav>
+</header>
+<main id="app"></main>
+
+<script>
+'use strict';
+
+const CURRENCY = 'KES'; // prices come from the server in cents
+const POLL_MS = 5000;
+const MAX_SEATS = 4;
+
+const state = { token: null, user: null };
+try {
+  state.token = localStorage.getItem('th_token');
+  state.user = JSON.parse(localStorage.getItem('th_user') || 'null');
+} catch { /* storage unavailable: stay logged out */ }
+
+const timers = [];
+function clearTimers() { while (timers.length) clearInterval(timers.pop()); }
+
+function h(tag, props = {}, ...kids) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key === 'class') node.className = value;
+    else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+    else if (value === true) node.setAttribute(key, '');
+    else if (value !== false && value != null) node.setAttribute(key, value);
+  }
+  for (const kid of kids.flat()) {
+    if (kid == null || kid === false) continue;
+    node.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  }
+  return node;
+}
+
+const money = (cents) => new Intl.NumberFormat(undefined, { style: 'currency', currency: CURRENCY }).format(cents / 100);
+const fmtDate = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const newKey = () => (crypto.randomUUID ? crypto.randomUUID() : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+const seatLabel = (seat) => `${seat.section}${seat.row}-${seat.number}`;
+
+async function api(method, path, body) {
+  const response = await fetch(path, {
+    method,
+    headers: {
+      ...(body ? { 'content-type': 'application/json' } : {}),
+      ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await response.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { /* non-JSON error body */ }
+  if (!response.ok) {
+    if (response.status === 401 && state.token) setSession(null, null);
+    const error = new Error(data?.error?.message || `Request failed (${response.status})`);
+    error.status = response.status;
+    error.code = data?.error?.code;
+    throw error;
+  }
+  return data;
+}
+
+function setSession(token, user) {
+  state.token = token;
+  state.user = user;
+  try {
+    if (token) {
+      localStorage.setItem('th_token', token);
+      localStorage.setItem('th_user', JSON.stringify(user));
+    } else {
+      localStorage.removeItem('th_token');
+      localStorage.removeItem('th_user');
+    }
+  } catch { /* ignore */ }
+  renderNav();
+}
+
+function renderNav() {
+  const nav = document.getElementById('nav');
+  nav.replaceChildren(
+    h('a', { href: '#/' }, 'Events'),
+    state.token ? h('a', { href: '#/tickets' }, 'My tickets') : null,
+    state.token
+      ? h('span', { class: 'muted' }, state.user?.name || '')
+      : null,
+    state.token
+      ? h('button', { onclick: () => { setSession(null, null); location.hash = '#/'; } }, 'Log out')
+      : h('button', { class: 'primary', onclick: () => { location.hash = '#/login'; } }, 'Log in'),
+  );
+}
+
+function message(text, kind = 'error') {
+  return h('div', { class: `msg ${kind}`, role: kind === 'error' ? 'alert' : 'status' }, text);
+}
+
+/* ---------- Events list ---------- */
+async function eventsView(root) {
+  const results = h('div');
+  const input = h('input', { type: 'search', placeholder: 'Search events or venues', 'aria-label': 'Search events' });
+  const load = async () => {
+    try {
+      const { events } = await api('GET', `/events?query=${encodeURIComponent(input.value)}`);
+      results.replaceChildren(
+        ...(events.length === 0
+          ? [h('p', { class: 'muted' }, 'No upcoming events found.')]
+          : events.map((event) => {
+              const open = new Date(event.onSaleAt) <= new Date();
+              return h('div', { class: 'card row between' },
+                h('div', {},
+                  h('h2', {}, event.title),
+                  h('div', { class: 'muted' }, `${event.venue} · ${fmtDate(event.startsAt)}`),
+                  h('div', { class: 'muted' }, open ? 'On sale now' : `Tickets on sale ${fmtDate(event.onSaleAt)}`)),
+                h('a', { href: `#/event/${event.id}` }, 'View seats'));
+            })),
+      );
+    } catch (error) {
+      results.replaceChildren(message(error.message));
+    }
+  };
+  root.append(
+    h('h2', {}, 'Upcoming events'),
+    h('form', { class: 'search', onsubmit: (e) => { e.preventDefault(); load(); } },
+      input, h('button', { class: 'primary', type: 'submit' }, 'Search')),
+    results,
+  );
+  await load();
+}
+
+/* ---------- Login / register ---------- */
+function authView(root) {
+  let mode = 'login';
+  const box = h('div', { class: 'card' });
+  const draw = (error) => {
+    const email = h('input', { type: 'email', required: true, autocomplete: 'email' });
+    const name = h('input', { type: 'text', required: true, autocomplete: 'name' });
+    const password = h('input', { type: 'password', required: true, minlength: mode === 'register' ? 8 : 1, autocomplete: mode === 'register' ? 'new-password' : 'current-password' });
+    box.replaceChildren(
+      h('div', { class: 'tabs' },
+        h('button', { type: 'button', 'aria-pressed': String(mode === 'login'), onclick: () => { mode = 'login'; draw(); } }, 'Log in'),
+        h('button', { type: 'button', 'aria-pressed': String(mode === 'register'), onclick: () => { mode = 'register'; draw(); } }, 'Create account')),
+      error ? message(error) : null,
+      h('form', {
+        onsubmit: async (e) => {
+          e.preventDefault();
+          try {
+            const body = mode === 'register'
+              ? { email: email.value, name: name.value, password: password.value }
+              : { email: email.value, password: password.value };
+            const result = await api('POST', `/auth/${mode}`, body);
+            setSession(result.token, result.user);
+            const next = sessionStorage.getItem('th_next') || '#/';
+            sessionStorage.removeItem('th_next');
+            location.hash = next;
+          } catch (err) { draw(err.message); }
+        },
+      },
+        h('label', {}, 'Email'), email,
+        mode === 'register' ? [h('label', {}, 'Name'), name] : null,
+        h('label', {}, mode === 'register' ? 'Password (at least 8 characters)' : 'Password'), password,
+        h('p', {}, h('button', { class: 'primary', type: 'submit' }, mode === 'register' ? 'Create account' : 'Log in'))),
+    );
+  };
+  draw();
+  root.append(h('h2', {}, 'Welcome to TicketHub'), box);
+}
+
+/* ---------- Event page: seat map, hold, pay ---------- */
+async function eventView(root, eventId) {
+  const status = h('div');
+  const seatBox = h('div');
+  const side = h('div');
+  const selected = new Map(); // seat id -> seat
+  let seats = [];
+  let event;
+  let order = null;
+  let busy = false;
+  let countdown = null;
+
+  try {
+    event = await api('GET', `/events/${eventId}`);
+  } catch (error) {
+    root.append(message(error.message), h('p', {}, h('a', { href: '#/' }, 'Back to events')));
+    return;
+  }
+  const onSale = new Date(event.onSaleAt) <= new Date();
+
+  const showStatus = (text, kind = 'error') => status.replaceChildren(text ? message(text, kind) : '');
+
+  async function refreshSeats() {
+    try {
+      seats = (await api('GET', `/events/${eventId}/seats`)).seats;
+      for (const id of [...selected.keys()]) {
+        const current = seats.find((seat) => seat.id === id);
+        if (!current || current.status !== 'AVAILABLE') selected.delete(id);
+      }
+      drawSeats();
+      drawSide();
+    } catch (error) { showStatus(error.message); }
+  }
+
+  function drawSeats() {
+    const sections = new Map();
+    for (const seat of seats) {
+      if (!sections.has(seat.section)) sections.set(seat.section, new Map());
+      const rows = sections.get(seat.section);
+      if (!rows.has(seat.row)) rows.set(seat.row, []);
+      rows.get(seat.row).push(seat);
+    }
+    seatBox.replaceChildren(
+      h('div', { class: 'legend' },
+        h('span', {}, h('span', { class: 'seat' }), ' Available'),
+        h('span', {}, h('span', { class: 'seat selected' }), ' Selected'),
+        h('span', {}, h('span', { class: 'seat held' }), ' Held by someone'),
+        h('span', {}, h('span', { class: 'seat sold' }), ' Sold')),
+      ...[...sections].map(([section, rows]) => {
+        const price = [...rows.values()][0][0].priceCents;
+        return h('div', {},
+          h('div', { class: 'section-title' }, `Section ${section} · ${money(price)} each`),
+          ...[...rows].map(([rowLabel, rowSeats]) => h('div', { class: 'seat-row' },
+            h('span', { class: 'row-label' }, rowLabel),
+            ...rowSeats.map((seat) => {
+              const isSelected = selected.has(seat.id);
+              const free = seat.status === 'AVAILABLE';
+              const cls = ['seat', seat.status === 'HELD' ? 'held' : '', seat.status === 'SOLD' ? 'sold' : '', isSelected ? 'selected' : ''].join(' ').trim();
+              return h('button', {
+                class: cls, type: 'button', disabled: !free || !onSale || order !== null,
+                'aria-pressed': String(isSelected),
+                'aria-label': `Seat ${seatLabel(seat)}, ${seat.status.toLowerCase()}`,
+                onclick: () => toggle(seat),
+              }, seat.number);
+            }))));
+      }),
+    );
+  }
+
+  function toggle(seat) {
+    showStatus('');
+    if (selected.has(seat.id)) selected.delete(seat.id);
+    else if (selected.size >= MAX_SEATS) { showStatus(`You can select at most ${MAX_SEATS} seats.`); return; }
+    else selected.set(seat.id, seat);
+    drawSeats();
+    drawSide();
+  }
+
+  async function hold() {
+    if (!state.token) {
+      sessionStorage.setItem('th_next', `#/event/${eventId}`);
+      location.hash = '#/login';
+      return;
+    }
+    busy = true; drawSide(); showStatus('');
+    try {
+      order = await api('POST', '/orders', { eventId: Number(eventId), seatIds: [...selected.keys()], idempotencyKey: newKey() });
+      selected.clear();
+    } catch (error) {
+      showStatus(error.message);
+    }
+    busy = false;
+    await refreshSeats();
+  }
+
+  async function pay(tokenInput) {
+    busy = true; drawSide(); showStatus('');
+    try {
+      const result = await api('POST', `/orders/${order.orderId}/payments`, {
+        paymentToken: tokenInput.value.trim(), idempotencyKey: newKey(),
+      });
+      order = { ...order, status: result.status };
+      showStatus('Payment successful. Your tickets are confirmed.', 'ok');
+    } catch (error) {
+      showStatus(error.message);
+      if (error.status === 410) order = null;
+    }
+    busy = false;
+    await refreshSeats();
+  }
+
+  async function cancel() {
+    busy = true; drawSide();
+    try {
+      await api('DELETE', `/orders/${order.orderId}`);
+      order = null;
+      showStatus('Your hold was released.', 'ok');
+    } catch (error) { showStatus(error.message); }
+    busy = false;
+    await refreshSeats();
+  }
+
+  function drawSide() {
+    if (countdown) { clearInterval(countdown); countdown = null; }
+    if (order && order.status === 'PAID') {
+      side.replaceChildren(h('div', { class: 'card' },
+        h('h3', {}, 'Tickets confirmed'),
+        h('p', {}, 'See them under ', h('a', { href: '#/tickets' }, 'My tickets'), '.'),
+        h('button', { onclick: () => { order = null; drawSeats(); drawSide(); showStatus(''); } }, 'Buy more')));
+      return;
+    }
+    if (order) {
+      const remaining = h('span', { class: 'timer' });
+      const tick = () => {
+        const ms = new Date(order.expiresAt) - Date.now();
+        remaining.textContent = ms > 0 ? `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}` : 'expired';
+      };
+      tick();
+      countdown = setInterval(tick, 1000);
+      timers.push(countdown);
+      const tokenInput = h('input', { type: 'text', value: 'tok_visa', 'aria-label': 'Payment token' });
+      side.replaceChildren(h('div', { class: 'card' },
+        h('h3', {}, 'Your seats are held'),
+        h('p', {}, `Total ${money(order.totalCents)}. Time left: `, remaining),
+        h('label', {}, 'Payment token (demo: tok_visa works, tok_decline is declined)'),
+        tokenInput,
+        h('p', { class: 'row' },
+          h('button', { class: 'primary', disabled: busy, onclick: () => pay(tokenInput) }, 'Pay now'),
+          h('button', { disabled: busy, onclick: cancel }, 'Cancel hold'))));
+      return;
+    }
+    const chosen = [...selected.values()];
+    const total = chosen.reduce((sum, seat) => sum + seat.priceCents, 0);
+    side.replaceChildren(h('div', { class: 'card' },
+      h('h3', {}, 'Your selection'),
+      chosen.length
+        ? h('p', {}, chosen.map(seatLabel).join(', '), ` · ${money(total)}`)
+        : h('p', { class: 'muted' }, `Pick up to ${MAX_SEATS} seats.`),
+      h('button', { class: 'primary', disabled: busy || chosen.length === 0 || !onSale, onclick: hold },
+        state.token ? 'Hold seats' : 'Log in to hold seats')));
+  }
+
+  root.append(
+    h('p', {}, h('a', { href: '#/' }, '← All events')),
+    h('div', { class: 'card' },
+      h('h2', {}, event.title),
+      h('div', { class: 'muted' }, `${event.venue} · ${fmtDate(event.startsAt)}`),
+      onSale ? null : message(`Tickets go on sale ${fmtDate(event.onSaleAt)}.`, 'ok')),
+    status, side, seatBox,
+  );
+  await refreshSeats();
+  timers.push(setInterval(() => { if (!busy && !order) refreshSeats(); }, POLL_MS));
+}
+
+/* ---------- My tickets ---------- */
+async function ticketsView(root) {
+  if (!state.token) {
+    sessionStorage.setItem('th_next', '#/tickets');
+    location.hash = '#/login';
+    return;
+  }
+  root.append(h('h2', {}, 'My tickets'));
+  try {
+    const { tickets } = await api('GET', '/users/me/tickets');
+    if (tickets.length === 0) {
+      root.append(h('p', { class: 'muted' }, 'You have no tickets yet. ', h('a', { href: '#/' }, 'Browse events'), '.'));
+      return;
+    }
+    root.append(...tickets.map((ticket) => h('div', { class: 'card ticket' },
+      h('h3', {}, ticket.event.title),
+      h('div', { class: 'muted' }, `${ticket.event.venue} · ${fmtDate(ticket.event.startsAt)}`),
+      h('p', {}, `Section ${ticket.section}, row ${ticket.row}, seat ${ticket.number}`),
+      h('div', { class: 'muted' }, `Order #${ticket.orderId}`))));
+  } catch (error) {
+    root.append(message(error.message));
+  }
+}
+
+/* ---------- Router ---------- */
+async function render() {
+  clearTimers();
+  const root = document.getElementById('app');
+  root.replaceChildren();
+  renderNav();
+  const hash = location.hash || '#/';
+  const eventMatch = hash.match(/^#\/event\/(\d+)$/);
+  if (eventMatch) await eventView(root, eventMatch[1]);
+  else if (hash === '#/login') authView(root);
+  else if (hash === '#/tickets') await ticketsView(root);
+  else await eventsView(root);
+}
+
+window.addEventListener('hashchange', render);
+render();
+</script>
+</body>
+</html>
